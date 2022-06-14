@@ -1,0 +1,107 @@
+---
+title: "Combined Power Plant Prediction"
+author: "Benjamin Earnest"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Load the data set
+
+Inspect for NA's, structure of the data, and data frame dimentions.  Also load as data frame since the data set was downloaded as an excel spreadsheet.
+
+```{r}
+power <- data.frame(Folds5x2_pp)
+head(power)
+sum(is.na(power))
+summary(power)
+dim(power)
+str(power)
+```
+
+# Exploratory Data Analysis:
+
+Check pairwise distributions and check for correlations with the predictor variables.
+
+```{r}
+pairs(power)
+corrplot::corrplot(cor(power[,-5]))
+```
+
+Look for outliers via box plots:
+
+```{r}
+boxplot(power$AT)
+boxplot(power$V)
+boxplot(power$AP)
+boxplot(power$RH)
+boxplot(power$PE)
+```
+Build histograms of predictor variables to check the distributions of the predictor variables for skewness:
+
+
+```{r}
+par(mfrow = c(1,4))
+hist(power$AT)
+hist(power$V)
+hist(power$AP)
+hist(power$RH)
+
+```
+Histogram of the target variable, which is full power output at different operating conditions:
+
+```{r}
+hist(power$PE)
+```
+
+
+Check for zero variance in the columns, suggesting which should be removed:
+
+```{r}
+degeneratecols <- nearZeroVar(power)
+degeneratecols
+```
+Look for highly correlated predictors and create a filtered data set that removes them.  In this case, AT was highly correlated to both the response (PE) and V, so AT was filtered out.
+
+
+```{r}
+correlations <- cor(power[,-5])
+highCorr <- findCorrelation(correlations, cutoff = 0.75)
+length(highCorr)
+head(highCorr)
+correlations
+filtered <- power[,-highCorr]
+head(filtered)
+```
+
+Convert PE target to "Derated", "Nominal", and "High" output ordinal values for other modeling options.  We can modify the bins based on the distribution later.
+
+```{r}
+filtered_ord <- filtered
+library(dplyr)
+
+PE_ord <- case_when(filtered_ord$PE <= 440 ~ 'Derated',
+                  between(filtered_ord$PE, 440, 480) ~ 'Nominal',
+                  filtered_ord$PE >= 480 ~ 'High'
+                  )
+PE_ord <- as.factor(PE_ord)
+power1 <- cbind(power, PE_ord)
+
+table(power$PE_ord)
+```
+
+
+Create the training/test split prior to pre-processing the data:
+
+
+
+```{r}
+set.seed(100)
+trainingRows <- createDataPartition(power1$PE, p = .8, list = FALSE)
+
+powerTrain <- power1[trainingRows,]
+powerTest <- power1[-trainingRows,]
+
+table(powerTrain$PE_ord)
+table(powerTest$PE_ord)
+```
+
