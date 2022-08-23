@@ -1,6 +1,6 @@
 ---
 title: "PREDICTING FULL POWER OUTPUT FROM A COMBINED CYCLE POWER PLANT "
-author: "Amin Fesharaki"
+author: "Benjamin Earnest, Amin Fesharaki, and Jeffrey Joyner"
 date: "6/19/2022"
 output: html_document
 ---
