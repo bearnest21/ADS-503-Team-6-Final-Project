@@ -1,0 +1,676 @@
+---
+title: "PREDICTING FULL POWER OUTPUT FROM A COMBINED CYCLE POWER PLANT "
+author: "Amin Fesharaki"
+date: "6/19/2022"
+output: html_document
+---
+
+
+
+# Install Librarys:
+
+```{r}
+library(caret)
+library(Hmisc)
+library(dplyr)
+library(gbm)
+library(lars)
+library(randomForest)
+library(AppliedPredictiveModeling)
+library(rpart)
+library(rpart.plot)
+library(partykit)
+library(Cubist)
+```
+
+```{r}
+power <- read.csv('/Users/datascience/Desktop/Project/Power_Plant_DS.csv')
+```
+
+
+# Load the data set
+
+Inspect for NA's, structure of the data, and data frame dimentions.  Also load as data frame since the data set was downloaded as an excel spreadsheet.
+
+```{r}
+#power <- data.frame(Power_Plant_DS)
+head(power)
+sum(is.na(power))
+summary(power)
+dim(power)
+str(power)
+```
+
+# Exploratory Data Analysis:
+
+## Check pairwise distributions and check for correlations with the predictor variables.
+
+```{r}
+pairs(power)
+corrplot::corrplot(cor(power[,-5]))
+```
+
+##Look for outliers via box plots:
+
+```{r}
+par(mfrow = c(1,3))
+boxplot(power$AT, power$V, power$RH, xlab = "AT/V/RH")
+boxplot(power$AP, xlab = "Atm Press")
+boxplot(power$PE, xlab = "Power Output")
+```
+
+Build histograms of predictor variables to check the distributions of the predictor variables for skewness:
+
+
+```{r}
+par(mfrow = c(1,4))
+hist(power$AT, xlab = "AT")
+hist(power$V, xlab = "V")
+hist(power$AP, xlab = "AP")
+hist(power$RH, xlab = "RH")
+
+```
+
+
+Histogram of the target variable, which is full power output at different operating conditions:
+
+```{r}
+hist(power$PE, xlab = "Power")
+```
+
+# Data Preprocessing
+
+Check for zero variance in the columns, suggesting which could be removed:
+
+```{r}
+degeneratecols <- nearZeroVar(power)
+degeneratecols
+```
+Look for highly correlated predictors and create a filtered data set that removes them.  In this case, AT was highly correlated to both the response (PE) and V, so AT was filtered out.  The filtered data set will be kept for comparison to models that are unfiltered.
+
+
+```{r}
+correlations <- cor(power[,-5])
+highCorr <- findCorrelation(correlations, cutoff = 0.75)
+length(highCorr)
+head(highCorr)
+correlations
+filtered <- power[,-highCorr]
+head(filtered)
+```
+
+Convert PE target to "Derated", "Nominal", and "High" output ordinal values for other modeling options.  We can modify the bins based on the distribution later.
+
+```{r}
+filtered_ord <- filtered
+
+
+PE_ord <- case_when(filtered_ord$PE <= 440 ~ 'Derated',
+                  between(filtered_ord$PE, 440, 480) ~ 'Nominal',
+                  filtered_ord$PE >= 480 ~ 'High'
+                  )
+PE_ord <- as.factor(PE_ord)
+power1 <- cbind(power, PE_ord)
+
+table(power$PE_ord)
+```
+
+
+Create the training/test split prior to pre-processing the data:
+
+
+
+```{r}
+set.seed(100)
+trainingRows <- createDataPartition(power1$PE, p = .8, list = FALSE)
+
+powerXTrain <- power1[trainingRows,]
+powerXTest <- power1[-trainingRows,]
+
+powerYTrain <- powerXTrain$PE
+powerYTest <- powerXTest$PE
+
+powerYTrain_ord <- powerXTrain$PE_ord
+powerYTest_ord <- powerXTest$PE_ord
+
+table(powerXTrain$PE_ord)
+table(powerXTest$PE_ord)
+head(powerXTrain)
+```
+## Transform Data, include Principal Component Analysis:
+
+```{r}
+#preprocess (normalize, center, scale):
+transXTrain <- preProcess(powerXTrain[,1:4], method = c("BoxCox", "center", "scale"))
+transXTrain
+
+transXTest <- preProcess(powerXTest[,1:4], method = c("BoxCox", "center", "scale"))
+transXTest
+
+# preprocess with pca:
+transXTrain_pca <- preProcess(powerXTrain[,1:4], method = c("BoxCox", "center", "scale", "pca"))
+transXTrain_pca
+
+transXTest_pca <- preProcess(powerXTest[,1:4], method = c("BoxCox", "center", "scale", "pca"))
+transXTest_pca
+
+```
+## Apply the transformation:
+
+```{r}
+powerTrain_Xtrans <- predict(transXTrain, powerXTrain[,1:4])
+head(powerTrain_Xtrans)
+dim(powerTrain_Xtrans)
+boxplot(powerTrain_Xtrans)
+
+powerTrain_Xtrans_pca <- predict(transXTrain_pca, powerXTrain[,1:4])
+head(powerTrain_Xtrans_pca)
+dim(powerTrain_Xtrans_pca)
+boxplot(powerTrain_Xtrans_pca)
+```
+
+```{r}
+powerTest_Xtrans <- predict(transXTest, powerXTest[,1:4])
+head(powerTest_Xtrans)
+dim(powerTest_Xtrans)
+boxplot(powerTest_Xtrans)
+
+powerTest_Xtrans_pca <- predict(transXTest_pca, powerXTest[,1:4])
+head(powerTest_Xtrans)
+dim(powerTest_Xtrans)
+boxplot(powerTest_Xtrans)
+```
+
+# **Linear Regression Models**
+
+# Linear Regression model
+
+```{r}
+indx <- createFolds(powerYTrain, returnTrain = TRUE)
+ctrl <- trainControl(method = "cv", index = indx)
+
+set.seed(100)
+lmTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                 method = "lm",
+                 trControl = ctrl)
+lmTune
+```
+```{r}
+#Variable importance:
+olsImp <- varImp(lmTune, scale = FALSE)
+plot(olsImp)
+```
+
+# Save the test results:
+
+```{r}
+testResults <- data.frame(obs = powerYTest, 
+                          Linear_Regression = predict(lmTune, powerTest_Xtrans))
+```
+
+
+# Linear Regression model using principal components from preprocessing:
+
+```{r}
+indx <- createFolds(powerYTrain, returnTrain = TRUE)
+ctrl <- trainControl(method = "cv", index = indx)
+
+set.seed(100)
+lmTune_pca <- train(x = powerTrain_Xtrans_pca, y = powerYTrain,
+                 method = "lm",
+                 trControl = ctrl)
+lmTune_pca
+```
+
+```{r}
+# Variable importance:
+ols_pcaImp <- varImp(lmTune_pca)
+plot(ols_pcaImp)
+```
+
+# Save test results:
+
+```{r}
+testResults$Linear_Regression_pca <- predict(lmTune_pca, powerTest_Xtrans_pca)
+```
+
+
+# PCR
+
+```{r}
+#PCR Tune
+set.seed(100)
+pcrTune <- train(x = powerTrain_Xtrans, y = powerYTrain, 
+                 method = "pcr",
+                 tuneLength =  30,
+                 trControl = ctrl)
+
+pcrTune
+
+#PCR Prediction
+testResults$pcr <- predict(pcrTune, powerTest_Xtrans)
+
+```
+
+```{r}
+pcrImp <- varImp(pcrTune, scale = FALSE)
+pcrImp
+```
+
+# PLS
+
+```{r}
+#PLS Tune
+set.seed(100)
+plsTune <- train(x = powerTrain_Xtrans, y = powerYTrain, 
+                 method = "pls",
+                 tuneLength =  30,
+                 trControl = ctrl)
+
+plsTune
+
+#PLS Prediction
+testResults$pls <- predict(plsTune, powerTest_Xtrans)
+
+```
+
+```{r}
+plsImp <- varImp(plsTune, scale = FALSE)
+plsImp
+```
+
+# **Penalized Linear Models**
+
+# Lasso
+
+```{r}
+# Lasso
+set.seed(100)
+
+LassoTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                   method = "lasso",
+                   trControl = ctrl,
+                   preProc = c("center", "scale"))
+LassoTune
+
+#Lasso Prediction
+testResults$lasso <- predict(LassoTune, powerTest_Xtrans)
+```
+
+```{r}
+lassoImp <- varImp(LassoTune, scale = FALSE)
+lassoImp
+```
+
+# Ridge Model:
+
+```{r}
+set.seed(100)
+ridgeGrid <- expand.grid(lambda = seq(0, .1, length = 15))
+
+set.seed(100)
+ridgeTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                   method = "ridge",
+                   tuneGrid = ridgeGrid,
+                   trControl = ctrl,
+                   preProc = c("center", "scale"))
+ridgeTune
+```
+
+```{r}
+print(update(plot(ridgeTune), xlab = "Penalty"))
+```
+```{r}
+testResults$Ridge <- predict(ridgeTune, powerTest_Xtrans)
+```
+
+# Elastic Net
+```{r}
+indx <- createFolds(powerYTrain, returnTrain = TRUE)
+
+ctrl <- trainControl(method = "cv", index = indx)
+
+enetGrid <- expand.grid(lambda = c(0, 0.01, .1), 
+                        fraction = seq(.05, 1, length = 20))
+set.seed(100)
+enetTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                  method = "enet",
+                  tuneGrid = enetGrid,
+                  trControl = ctrl,
+                  preProc = c("center", "scale"))
+enetTune
+
+testResults$enet <- predict(enetTune, powerTest_Xtrans)
+
+enetImp <- varImp(enetTune, scale = FALSE)
+enetImp
+```
+
+# **Non Linear Regression Models** 
+
+# MARS
+```{r}
+ctrl <- trainControl(method = "cv", index = indx)
+
+set.seed(100)
+marsTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                  method = "earth",
+                  tuneGrid = expand.grid(degree = 1, nprune = 2:38),
+                  trControl = ctrl)
+marsTune
+marsTune$finalModel
+marsTune$finalModel$coefficients
+
+plot(marsTune)
+
+testResults$MARS <- predict(marsTune, powerTest_Xtrans)
+
+marsImp <- varImp(marsTune, scale = FALSE)
+plot(marsImp, top = 4)
+
+```
+
+# Support Vector Machine:
+
+```{r}
+#set.seed(100)
+#svmRTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+#                  method = "svmRadial",
+#                  preProc = c("center", "scale"),
+#                  tuneLength = 14,
+#                  trControl = ctrl)
+#svmRTune
+```
+```{r}
+#plot(svmRTune, scales = list(x = list(log = 2)))
+```
+
+```{r}
+#svmRTune$finalModel
+```
+
+
+
+```{r}
+#testResults$SVM <- predict(svmRTune, powerTest_Xtrans)
+```
+
+
+```{r}
+#svmGrid <- expand.grid(degree = 1:2,
+#                       scale = c(0.01, 0.005, 0.001),
+#                       C = 2^(-2.5))
+
+#set.seed(100)
+#svmPTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+#                  method = "svmPoly",
+#                  preProc = c("center", "scale"),
+#                  tuneGrid = svmGrid,
+#                  trControl = ctrl)
+
+#svmPTune
+```
+```{r}
+#svmPTune$finalModel
+```
+```{r}
+#testResults$svmPTune <- predict(svmPTune, powerTest_Xtrans)
+```
+
+```{r}
+#plot(svmPTune, scales = list(x = list(log = 2),
+#                             between = list(x = .5, y = 1)))
+```
+
+# KNN
+```{r}
+set.seed(100)
+
+knnTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                 method = "knn",
+                 preProc = c("center", "scale"),
+                 tuneGrid = data.frame(k = 1:20),
+                 trControl = ctrl)
+                 
+knnTune
+plot(knnTune)
+testResults$Knn <- predict(knnTune, powerTest_Xtrans)
+
+
+```
+
+# Neural Network
+
+```{r}
+#Neurel Network Tune
+set.seed(100)
+nnetGrid <- expand.grid(decay = c(0, .1, 1), 
+                        size = c(3, 6, 12, 15))
+MaxSize <- max(nnetGrid$size)
+nwts <- 1*(MaxSize*(length(powerTrain_Xtrans)+1) + MaxSize + 1) #For MaxNWTS
+
+nnetTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                  method = "nnet",
+                  tuneGrid = nnetGrid,
+                  trControl = ctrl,
+                  preProc = c("center", "scale"),
+                  linout = TRUE,
+                  trace = FALSE, 
+                  MaxNWts = nwts,
+                  maxit = 1000)
+nnetTune
+
+#Neural Prediction
+testResults$neural_net <- predict(nnetTune, powerTest_Xtrans)
+
+```
+
+```{r}
+NNETImp <- varImp(nnetTune, scale = FALSE)
+NNETImp
+```
+
+# **Regression Trees** 
+
+# Random Forest
+
+```{r}
+#Random Forest
+set.seed(100)
+rfModel <- randomForest(powerTrain_Xtrans, powerYTrain,
+                        importance = TRUE,
+                        ntrees = 1000)
+#Random Forest Prediction
+testResults$randomforest <- predict(rfModel, powerTest_Xtrans)
+```
+
+```{r}
+rfImp <- varImp(rfModel, scale = FALSE)
+rfImp
+```
+
+# Bagged Tres
+```{r}
+set.seed(100)
+
+### Bagged Trees
+
+treebagTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                     method = "treebag",
+                     nbagg = 25,
+                     trControl = ctrl)
+treebagTune
+
+#Tree Bag Prediction
+testResults$treebag <- predict(treebagTune, powerTest_Xtrans)
+```
+
+```{r}
+baggedImp <- varImp(treebagTune, scale = FALSE)
+baggedImp
+```
+
+# CART
+```{r}
+
+set.seed(100)
+ctrl <- trainControl(method = "cv", index = indx)
+cartTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                  method = "rpart",
+                  tuneLength = 25,
+                  trControl = ctrl)
+cartTune
+cartTune$finalModel
+prp(cartTune$finalModel)
+
+### Plot the tuning results
+plot(cartTune, scales = list(x = list(log = 10)))
+
+### Use the partykit package to make some nice plots. First, convert
+### the rpart objects to party objects.
+
+# 
+cartTree <- as.party(cartTune$finalModel)
+plot(cartTree)
+
+### Get the variable importance. 'competes' is an argument that
+### controls whether splits not used in the tree should be included
+### in the importance calculations.
+
+cartImp <- varImp(cartTune, scale = FALSE, competes = FALSE)
+cartImp
+
+### Save the test set results in a data frame                 
+testResults$cart <-  predict(cartTune, powerTest_Xtrans)
+
+```
+
+#Boosted Tree
+
+```{r}
+gbmGrid <- expand.grid(interaction.depth = seq(1, 7, by = 2),
+                       n.trees = seq(100, 500, by = 50),
+                       shrinkage = c(0.01, 0.1),
+                       n.minobsinnode = 10)
+
+set.seed(100)
+gbmTune <- train(x = powerTrain_Xtrans, y = powerYTrain,
+                 method = "gbm",
+                 tuneGrid = gbmGrid,
+                 trControl = ctrl,
+                 verbose = FALSE)
+gbmTune
+```
+
+```{r}
+gbmImp <- varImp(gbmTune, scale = FALSE)
+gbmImp
+```
+
+```{r}
+summary(gbmTune$finalModel,
+        cBars = 10,
+        method = relative.influence,
+        las = 2)
+
+```
+
+
+```{r}
+plot(gbmTune, auto.key = list(columns = 4, lines = TRUE))
+```
+
+```{r}
+testResults$gbm <- predict(gbmTune, powerTest_Xtrans)
+```
+# Cubist
+
+```{r}
+#Cubist
+set.seed(100)
+cubistModel <- cubist(powerTrain_Xtrans, powerYTrain)
+
+cubistModel
+
+cubistImp <- varImp(cubistModel, scale = FALSE)
+cubistImp
+                        
+#Cubist Prediction
+testResults$cubist <- predict(cubistModel, powerTest_Xtrans)
+```
+
+# Results
+
+```{r}
+#Calculate RMSE, Rsquared, and MAE
+set.seed(100)
+
+# Linear Models
+OLS <- postResample(pred = testResults$Linear_Regression, obs = testResults$obs) 
+OLS_PCA <- postResample(pred = testResults$Linear_Regression_pca, obs = testResults$obs)
+PCR <- postResample(pred = testResults$pcr, obs = testResults$obs) 
+PLS <- postResample(pred = testResults$pls, obs = testResults$obs) 
+
+# Penalized Linear Models
+Lasso <- postResample(pred = testResults$lasso, obs = testResults$obs) 
+Ridge <- postResample(pred = testResults$Ridge, obs = testResults$obs)
+ElasticNet <- postResample(pred = testResults$enet, obs = testResults$obs) 
+
+# Non Linear Regression Models
+MARS <- postResample(pred = testResults$MARS, obs = testResults$obs) 
+#SVM <- postResample(pred = testResults$SVM, obs = testResults$obs)
+#SVM_Tune <- postResample(pred = testResults$svmPTune, obs = testResults$obs)
+KNN <- postResample(pred = testResults$Knn, obs = testResults$obs) 
+NeuralNetwork <- postResample(pred = testResults$neural_net, obs = testResults$obs) 
+
+# Regression Trees
+CART <- postResample(pred = testResults$cart, obs = testResults$obs) 
+Cubist <- postResample(pred = testResults$cubist, obs = testResults$obs)
+RandomForest <- postResample(pred = testResults$randomforest, obs = testResults$obs) 
+BoostedTrees <- postResample(pred = testResults$gbm, obs = testResults$obs)
+BaggedTrees <- postResample(pred = testResults$treebag, obs = testResults$obs)
+
+
+```
+
+```{r}
+#Combine Model Results Table
+Model_Results <- as.data.frame(rbind(OLS,
+                                     OLS_PCA,
+                                     PCR,
+                                     PLS,
+                                     Lasso,
+                                     Ridge,
+                                     ElasticNet,
+                                     MARS,
+                                     #SVM,
+                                    #SVM_Tune,
+                                     KNN,
+                                     NeuralNetwork,
+                                     CART,
+                                     Cubist,
+                                     RandomForest,
+                                     BoostedTrees,
+                                     BaggedTrees))
+Model_Results <- round(Model_Results,4) #Round table
+
+Model_Results
+```
+```{r}
+Model_Results[order(Model_Results$RMSE),] #Order by RMSE in Descending Order
+```
+# Best Models  
+*(With respect to the lowest RMSE Score)*  
+Best Linear  Model: OLS   
+Best Penalized Model: Ridge  
+Best Non Linear Regression Model: KNN  
+Best Tree Model: Random Forest  
+
+Best Overall Model is the Random Forest Model (Regression Trees)
+
+
+
+
+
+
+
